@@ -1,4 +1,12 @@
 <script lang="ts">
+    // Add this type definition
+    type EpicData = {
+        centroid_coordinates: {
+            lat: number;
+            lon: number;
+        };
+    };
+
     import { onMount } from 'svelte';
     import * as d3 from 'd3';
     import {type GeoProjection, type GeoPath } from 'd3-geo';
@@ -12,17 +20,40 @@
     ];
   
     let earthImage = '';
-    let satelliteData: Array<{ name: string; gseY: number; gseZ: number; time: string }> = [];
+    let satelliteData: Array<{ 
+      name: string; 
+      gseY: number; 
+      gseZ: number; 
+      time: string;
+      satelliteURL: string;
+    }> = [];
     let subsolarPoint = { lat: 0, lon: 0 };
-    let projection: GeoProjection, pathGenerator: GeoPath;
     const width = 800;
     const height = 800;
+  
+    let projection = d3.geoOrthographic()
+      .scale(width / 2.5)
+      .translate([width / 2, height / 2])
+      .clipAngle(90);
+    let pathGenerator = d3.geoPath().projection(projection);
   
     // Access environment variable
     const NASA_API_KEY = import.meta.env.VITE_NASA_API_KEY;
   
     // Add reactive variable for hover state
     let hoveredStation: string | null = null;
+  
+    // Initialize with two days ago by default
+    const twoDaysAgo = new Date();
+    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+    let selectedDate = twoDaysAgo.toISOString().split('T')[0]; // Two days ago in YYYY-MM-DD format
+    let availableTimes: string[] = [];
+    let selectedTime: string = '';
+  
+    // Set minimum date to 1 year ago
+    const oneYearAgo = new Date();
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    const minDate = oneYearAgo.toISOString().split('T')[0];
   
     // Add function to get local time for a station
     function getStationLocalTime(lon: number): string {
@@ -48,23 +79,50 @@
       };
     }
   
+    // Modify fetchEPICData to handle the date string correctly
     async function fetchEPICData() {
-      const epicRes = await fetch(
-        `https://api.nasa.gov/EPIC/api/enhanced?api_key=${NASA_API_KEY}`
-      );
-      const epicData = await epicRes.json();
-      
-      if (epicData?.[0]) {
-        const date = epicData[0].date.split(' ')[0].replace(/-/g, '/');
-        const imageName = epicData[0].image;
+      try {
+        console.log('Fetching EPIC data for date:', selectedDate);
+        const epicURL = `https://epic.gsfc.nasa.gov/api/enhanced/date/${selectedDate}`;
+        const epicRes = await fetch(epicURL);
         
-        subsolarPoint = {
-          lat: epicData[0].centroid_coordinates.lat,
-          lon: epicData[0].centroid_coordinates.lon
-        };
-        earthImage = `https://epic.gsfc.nasa.gov/archive/enhanced/${date}/png/${imageName}.png`;
+        if (!epicRes.ok) {
+          throw new Error(`HTTP error! status: ${epicRes.status}`);
+        }
+        
+        const epicData = await epicRes.json();
+        
+        if (!epicData || epicData.length === 0) {
+          throw new Error('No data available for selected date');
+        }
+        
+        // Update available times for this date
+        availableTimes = epicData.map((data: any) => data.date.split(' ')[1]);
+        
+        // If no time is selected, use the most recent
+        if (!selectedTime && availableTimes.length > 0) {
+          selectedTime = availableTimes[availableTimes.length - 1];
+        }
+        
+        // Find the data point matching our selected time
+        const selectedData = epicData.find((data: any) => data.date.split(' ')[1] === selectedTime);
+        
+        if (selectedData) {
+          const date = selectedData.date.split(' ')[0].replace(/-/g, '/');
+          const imageName = selectedData.image;
+          
+          subsolarPoint = {
+            lat: selectedData.centroid_coordinates.lat,
+            lon: selectedData.centroid_coordinates.lon
+          };
+          earthImage = `https://epic.gsfc.nasa.gov/archive/enhanced/${date}/png/${imageName}.png`;
+          return selectedData;
+        }
+        throw new Error('No matching time data found');
+      } catch (error) {
+        console.error('Error fetching EPIC data:', error);
+        return null;
       }
-      return epicData;
     }
   
     function formatSatelliteDate(date: Date) {
@@ -74,49 +132,64 @@
         .replace(/Z$/, 'Z');     // Keep the Z
     }
   
+    // Modify satellite data fetch to handle the date string correctly
     async function fetchSatelliteData() {
-      const endDate = new Date();
-      const startDate = new Date(endDate);
-      startDate.setHours(startDate.getHours() - 1);
-      
-      const satURL = `https://sscweb.gsfc.nasa.gov/WS/sscr/2/locations/ace,dscovr/${formatSatelliteDate(startDate)},${formatSatelliteDate(endDate)}/gse/`;
-      
-      const satRes = await fetch(satURL);
-      const xmlText = await satRes.text();
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-      
-      const dataElements = xmlDoc.querySelectorAll('Data');
-      return Array.from(dataElements).map(data => {
-        const coords = data.querySelector('Coordinates');
-        const name = data.querySelector('Id')?.textContent || '';
-        // Get the last Y and Z values from the arrays
-        const yValues = coords?.querySelectorAll('Y');
-        const zValues = coords?.querySelectorAll('Z');
-        const lastY = yValues?.[yValues.length - 1]?.textContent;
-        const lastZ = zValues?.[zValues.length - 1]?.textContent;
+      try {
+        const dateObj = new Date(selectedDate);
+        const endDate = new Date(dateObj);
+        endDate.setHours(endDate.getHours() + 1);
+        const startDate = new Date(dateObj);
+        startDate.setHours(startDate.getHours() - 1);
         
-        return {
-          name: name,
-          gseY: parseFloat(lastY || '0'),
-          gseZ: parseFloat(lastZ || '0'),
-          time: data.querySelector('Time')?.textContent || '',
-          imageDate: data.querySelector('Time')?.textContent || '',
-          satelliteURL: `https://sscweb.gsfc.nasa.gov/WS/sscr/2/locations/ace,dscovr/${formatSatelliteDate(startDate)},${formatSatelliteDate(endDate)}/gse/`
-        };
-      });
+        const satURL = `https://sscweb.gsfc.nasa.gov/WS/sscr/2/locations/ace,dscovr/${formatSatelliteDate(startDate)},${formatSatelliteDate(endDate)}/gse/`;
+        
+        const satRes = await fetch(satURL);
+        const xmlText = await satRes.text();
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+        
+        const dataElements = xmlDoc.querySelectorAll('Data');
+        return Array.from(dataElements).map(data => {
+          const coords = data.querySelector('Coordinates');
+          const name = data.querySelector('Id')?.textContent || '';
+          // Get the last Y and Z values from the arrays
+          const yValues = coords?.querySelectorAll('Y');
+          const zValues = coords?.querySelectorAll('Z');
+          const lastY = yValues?.[yValues.length - 1]?.textContent;
+          const lastZ = zValues?.[zValues.length - 1]?.textContent;
+          
+          return {
+            name: name,
+            gseY: parseFloat(lastY || '0'),
+            gseZ: parseFloat(lastZ || '0'),
+            time: data.querySelector('Time')?.textContent || '',
+            satelliteURL: satURL
+          };
+        });
+      } catch (error) {
+        console.error('Error fetching satellite data:', error);
+        return [];
+      }
     }
   
     async function fetchData() {
       try {
         const epicData = await fetchEPICData();
+        if (!epicData) {
+          console.error('No EPIC data received');
+          return null;
+        }
+        
         satelliteData = await fetchSatelliteData();
-  
+
         console.log('EPIC Data:', epicData);
         console.log('Earth Image URL:', earthImage);
         console.log('Satellite Data:', satelliteData);
+        
+        return epicData;
       } catch (err) {
         console.error('Data fetch error:', err);
+        return null;
       }
     }
   
@@ -143,54 +216,130 @@
       });
     }
   
-    // Update the projection function to match EPIC perspective
-    function updateProjection() {
+    // Update the projection function to correctly match EPIC perspective
+    function updateProjection(epicData: EpicData) {
+      if (!projection) return;
+      
+      const lon = epicData.centroid_coordinates.lon;
+      const lat = epicData.centroid_coordinates.lat;
+      
+      // Adjust scale to match EPIC image exactly
       projection = d3.geoOrthographic()
-        .scale(250)
-        .translate([width/2, height/2])
-        .rotate([-subsolarPoint.lon, -subsolarPoint.lat, 0])
+        .scale(width / 2.55)  // Make slightly smaller to match EPIC image
+        .translate([width / 2, height / 1.94])
         .clipAngle(90);
-  
-      pathGenerator = d3.geoPath(projection);
-      logVisibleFeatures();
+        
+      // Let's try inverting the longitude to fix NZ/AUS positions
+      projection.rotate([lon, -lat, 0]);
+      
+      pathGenerator = d3.geoPath().projection(projection);
+      
+      // Debug log to check coordinates
+      console.log('Station coordinates:', {
+        aus: {
+          raw: [149.1244, -35.3082],
+          projected: projection([149.1244, -35.3082])
+        },
+        nz: {
+          raw: [-159.7763, -21.2291],
+          projected: projection([-159.7763, -21.2291])
+        },
+        epicCenter: { lon, lat },
+        rotation: projection.rotate()
+      });
     }
   
-    // Add a function to check if a point should be visible
+    // Update visibility check to match EPIC perspective
     function isPointVisible(lon: number, lat: number): boolean {
-      if (!projection) return false;
-      
-      // Get the current rotation
-      const [centerLon, centerLat] = projection.rotate();
-      
-      // Calculate the angular distance between the point and the center of view
-      const distance = d3.geoDistance(
-        [-centerLon, -centerLat],  // Center of view (inverse of rotation)
-        [lon, lat]                 // Point to test
-      );
-      
-      // Point is visible if it's less than 90 degrees (π/2 radians) from center
-      return distance < Math.PI / 2;
+      return (lon > 90 || lon < -90);  // Pacific side
     }
   
-    onMount(() => {
-      fetchData();
-      updateProjection();
+    // Add this helper function to log station positions
+    function logStationPositions() {
+      if (!projection) return;
       
-      const interval = setInterval(async () => {
-        await fetchData();
-        updateProjection();
-      }, 3600000);
-
-      return () => clearInterval(interval);
+      xBandStations.forEach(station => {
+        const pos = projection([station.lon, station.lat]);
+        console.log(`Station ${station.name}:`, {
+          rawCoords: [station.lon, station.lat],
+          projectedPos: pos,
+          currentRotation: projection.rotate()
+        });
+      });
+    }
+  
+    // Add handler for date/time changes
+    async function handleDateTimeChange() {
+      console.log('Date/time changed to:', selectedDate, selectedTime);
+      const epicData = await fetchData();
+      if (epicData) {
+        updateProjection(epicData);
+        logStationPositions();
+      }
+    }
+  
+    // Initialize data on mount
+    onMount(async () => {
+      const epicData = await fetchData();
+      if (epicData) {
+        updateProjection(epicData);
+        logStationPositions();
+      }
     });
   </script>
   
   <div class="visualization-container">
     <div class="visualization-wrapper">
       <svg {width} {height} viewBox="0 0 {width} {height}" class="visualization">
+        <!-- EPIC image first -->
         {#if earthImage}
           <image href={earthImage} x="0" y="0" width={width} height={height} />
         {/if}
+      
+        <!-- Border circle -->
+        <circle
+          cx={width/2}
+          cy={height/1.94}
+          r={width/2.55}
+          fill="none"
+          stroke="red"
+          stroke-width="1"
+        />
+      
+        <!-- Graticule on top -->
+        {#if pathGenerator}
+          <path
+            d={pathGenerator(d3.geoGraticule()())}
+            stroke="rgba(255,255,255,0.3)"
+            fill="none"
+            stroke-width="0.5"
+          />
+        {/if}
+      
+        <!-- Station rendering -->
+        {#each xBandStations as station}
+          {@const visible = isPointVisible(station.lon, station.lat)}
+          {@const position = projection([station.lon, station.lat])}
+          {#if visible && position}
+            <g>
+              <!-- Add coordinate debug text -->
+              <text
+                x={position[0] + 10}
+                y={position[1] - 10}
+                fill="white"
+                font-size="10px"
+              >{station.name}: {station.lon}°, {station.lat}°</text>
+              
+              <circle
+                cx={position[0]}
+                cy={position[1]}
+                r="4"
+                fill={station.color}
+                class:highlighted={hoveredStation === station.name}
+              />
+            </g>
+          {/if}
+        {/each}
       
         <!-- Coverage Areas -->
         {#each xBandStations as station}
@@ -206,49 +355,57 @@
       
         <!-- Ground Stations -->
         {#each xBandStations as station}
-          {#if projection && isPointVisible(station.lon, station.lat)}
+          {@const visible = isPointVisible(station.lon, station.lat)}
+          {@const position = projection([station.lon, station.lat])}
+          {#if visible && position}
             <g 
               role="button"
               tabindex="0"
               on:mouseenter={() => hoveredStation = station.name}
               on:mouseleave={() => hoveredStation = null}
             >
+              <!-- Add coordinate debug text -->
+              <text
+                x={position[0] + 10}
+                y={position[1] - 10}
+                fill="white"
+                font-size="10px"
+              >{station.name}: {station.lon}°, {station.lat}°</text>
+              
               <circle
-                cx={projection([station.lon, station.lat])?.[0]}
-                cy={projection([station.lon, station.lat])?.[1]}
+                cx={position[0]}
+                cy={position[1]}
                 r="4"
                 fill={station.color}
                 class:highlighted={hoveredStation === station.name}
               />
               {#if hoveredStation === station.name}
-                {#if projection}
-                  {@const coords = projection([station.lon, station.lat]) || [0, 0]}
-                  <g transform="translate({coords[0]}, {coords[1] - 10})">
-                    <rect
-                      x="-100"
-                      y="-40"
-                      width="200"
-                      height="35"
-                      fill="white"
-                      stroke={station.color}
-                      rx="4"
-                    />
-                    <text
-                      x="0"
-                      y="-20"
-                      text-anchor="middle"
-                      fill="black"
-                      font-size="12px"
-                    >{station.name}</text>
-                    <text
-                      x="0"
-                      y="-5"
-                      text-anchor="middle"
-                      fill="black"
-                      font-size="12px"
-                    >Local Time: {getStationLocalTime(station.lon)}</text>
-                  </g>
-                {/if}
+                {@const coords = position || [0, 0]}
+                <g transform="translate({coords[0]}, {coords[1] - 10})">
+                  <rect
+                    x="-100"
+                    y="-40"
+                    width="200"
+                    height="35"
+                    fill="white"
+                    stroke={station.color}
+                    rx="4"
+                  />
+                  <text
+                    x="0"
+                    y="-20"
+                    text-anchor="middle"
+                    fill="black"
+                    font-size="12px"
+                  >{station.name}</text>
+                  <text
+                    x="0"
+                    y="-5"
+                    text-anchor="middle"
+                    fill="black"
+                    font-size="12px"
+                  >Local Time: {getStationLocalTime(station.lon)}</text>
+                </g>
               {/if}
             </g>
           {/if}
@@ -271,6 +428,35 @@
           Image taken: {satelliteData[0]?.time || 'Loading...'} UTC
         </div>
       {/if}
+    </div>
+  </div>
+
+   <!-- Reposition controls and add more user-friendly labels -->
+   <div class="controls">
+    <div class="control-group">
+        <label for="date-picker">Select Date:</label>
+        <input 
+            id="date-picker"
+            type="date" 
+            bind:value={selectedDate}
+            min={minDate}
+            max={new Date().toISOString().split('T')[0]}
+            on:change={handleDateTimeChange}
+        />
+    </div>
+    
+    <div class="control-group">
+        <label for="time-picker">Select Time (UTC):</label>
+        <select 
+            id="time-picker"
+            bind:value={selectedTime}
+            on:change={handleDateTimeChange}
+            disabled={availableTimes.length === 0}
+        >
+            {#each availableTimes as time}
+                <option value={time}>{time} UTC</option>
+            {/each}
+        </select>
     </div>
   </div>
   
@@ -299,12 +485,12 @@
     <div class="api-urls">
       <div class="api-url">
         <strong>EPIC Data:</strong>
-        <code>https://api.nasa.gov/EPIC/api/natural?api_key=${NASA_API_KEY}</code>
+        <code><a href="https://api.nasa.gov/EPIC/api/natural">https://api.nasa.gov/EPIC/api/natural</a></code>
       </div>
       {#if satelliteData[0]}
         <div class="api-url">
           <strong>Satellite Data:</strong>
-          <code>{satelliteData[0].satelliteURL}</code>
+          <code><a href={satelliteData[0].satelliteURL}>{satelliteData[0].satelliteURL}</a></code>
         </div>
       {/if}
     </div>
@@ -353,6 +539,9 @@
     }
 
     .station-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       padding: 4px 8px;
       border-radius: 4px;
       transition: background-color 0.2s;
@@ -394,14 +583,14 @@
 
     .epic-timestamp {
       position: absolute;
-      bottom: 40px;
+      bottom: 23px;
       left: 50%;
       transform: translateX(-50%);
       background-color: rgba(0, 0, 0, 0.6);
-      color: white;
+      color: rgba(255, 255, 255, 0.802);
       padding: 8px 16px;
       border-radius: 4px;
-      font-size: 0.9rem;
+      font-size: 1rem;
       text-align: center;
     }
 
@@ -412,18 +601,54 @@
     }
 
     .api-url {
-      background: #fff;
-      padding: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
       border-radius: 4px;
       font-size: 0.9rem;
     }
 
-    .api-url code {
+    .api-url code a {
+      color: #000;
       display: block;
       margin-top: 0.25rem;
-      padding: 0.5rem;
-      background: #f0f0f0;
       border-radius: 4px;
       overflow-x: auto;
+    }
+
+    /* Add styles for the new controls */
+    .controls {
+      margin: 2rem auto;
+      padding: 1rem;
+      display: flex;
+      gap: 2rem;
+      justify-content: center;
+      background-color: #f5f5f5;
+      border-radius: 8px;
+      max-width: 800px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .control-group label {
+      font-weight: bold;
+      color: #333;
+    }
+
+    .controls input,
+    .controls select {
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 1rem;
+    }
+
+    .controls select:disabled {
+      background-color: #eee;
+      cursor: not-allowed;
     }
   </style>
