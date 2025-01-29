@@ -3,7 +3,7 @@
   </script>
   
   <main>
-    <h1>L1 Earth Visualizer (SvelteKit)</h1>
+    <h1>L1 Earth Visualizer</h1>
     <EarthVisualizer />
   </main>
   

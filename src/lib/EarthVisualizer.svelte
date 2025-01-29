@@ -50,7 +50,7 @@
   
     async function fetchEPICData() {
       const epicRes = await fetch(
-        `https://api.nasa.gov/EPIC/api/natural?api_key=${NASA_API_KEY}`
+        `https://api.nasa.gov/EPIC/api/enhanced?api_key=${NASA_API_KEY}`
       );
       const epicData = await epicRes.json();
       
@@ -62,7 +62,7 @@
           lat: epicData[0].centroid_coordinates.lat,
           lon: epicData[0].centroid_coordinates.lon
         };
-        earthImage = `https://epic.gsfc.nasa.gov/archive/natural/${date}/png/${imageName}.png`;
+        earthImage = `https://epic.gsfc.nasa.gov/archive/enhanced/${date}/png/${imageName}.png`;
       }
       return epicData;
     }
@@ -145,22 +145,13 @@
   
     // Update the projection function to match EPIC perspective
     function updateProjection() {
-      // EPIC views Earth from L1 point, approximately 1.5 million km away
       projection = d3.geoOrthographic()
         .scale(250)
         .translate([width/2, height/2])
-        // Adjust rotation based on EPIC image orientation
-        // The subsolar point helps us align the sunlit portion correctly
-        .rotate([
-          -subsolarPoint.lon,  // Longitude rotation
-          -subsolarPoint.lat,  // Latitude rotation
-          0                    // Roll angle
-        ])
+        .rotate([-subsolarPoint.lon, -subsolarPoint.lat, 0])
         .clipAngle(90);
   
       pathGenerator = d3.geoPath(projection);
-      
-      // Log current orientation for debugging
       logVisibleFeatures();
     }
   
@@ -168,25 +159,17 @@
     function isPointVisible(lon: number, lat: number): boolean {
       if (!projection) return false;
       
-      const coords = projection([lon, lat]);
-      if (!coords) return false;
-      
       // Get the current rotation
-      const [lambda, phi] = projection.rotate();
+      const [centerLon, centerLat] = projection.rotate();
       
-      // Convert to radians
-      const lonRad = -lon * Math.PI / 180;
-      const latRad = lat * Math.PI / 180;
-      const lambdaRad = lambda * Math.PI / 180;
-      const phiRad = phi * Math.PI / 180;
+      // Calculate the angular distance between the point and the center of view
+      const distance = d3.geoDistance(
+        [-centerLon, -centerLat],  // Center of view (inverse of rotation)
+        [lon, lat]                 // Point to test
+      );
       
-      // Calculate great circle distance to visible center
-      const cosDistance = Math.sin(latRad) * Math.sin(-phiRad) +
-                         Math.cos(latRad) * Math.cos(-phiRad) * 
-                         Math.cos(lonRad - lambdaRad);
-      
-      // Point is visible if less than 90 degrees from center
-      return cosDistance > 0;
+      // Point is visible if it's less than 90 degrees (π/2 radians) from center
+      return distance < Math.PI / 2;
     }
   
     onMount(() => {
@@ -203,83 +186,92 @@
   </script>
   
   <div class="visualization-container">
-    <svg {width} {height} viewBox="0 0 {width} {height}" class="visualization">
-      {#if earthImage}
-        <image href={earthImage} x="0" y="0" width={width} height={height} />
-      {/if}
-    
-      <!-- Coverage Areas -->
-      {#each xBandStations as station}
-        {#if pathGenerator && isPointVisible(station.lon, station.lat)}
-          <path
-            d={pathGenerator(createCoverageGeoJSON(station))}
-            fill={station.color}
-            fill-opacity="0.2"
-            stroke={station.color}
-          />
+    <div class="visualization-wrapper">
+      <svg {width} {height} viewBox="0 0 {width} {height}" class="visualization">
+        {#if earthImage}
+          <image href={earthImage} x="0" y="0" width={width} height={height} />
         {/if}
-      {/each}
-    
-      <!-- Ground Stations -->
-      {#each xBandStations as station}
-        {#if projection && isPointVisible(station.lon, station.lat)}
-          <g 
-            role="button"
-            tabindex="0"
-            on:mouseenter={() => hoveredStation = station.name}
-            on:mouseleave={() => hoveredStation = null}
-          >
-            <circle
-              cx={projection([station.lon, station.lat])?.[0]}
-              cy={projection([station.lon, station.lat])?.[1]}
-              r="4"
+      
+        <!-- Coverage Areas -->
+        {#each xBandStations as station}
+          {#if pathGenerator && isPointVisible(station.lon, station.lat)}
+            <path
+              d={pathGenerator(createCoverageGeoJSON(station))}
               fill={station.color}
-              class:highlighted={hoveredStation === station.name}
+              fill-opacity="0.2"
+              stroke={station.color}
             />
-            {#if hoveredStation === station.name}
-              {#if projection}
-                {@const coords = projection([station.lon, station.lat]) || [0, 0]}
-                <g transform="translate({coords[0]}, {coords[1] - 10})">
-                  <rect
-                    x="-100"
-                    y="-40"
-                    width="200"
-                    height="35"
-                    fill="white"
-                    stroke={station.color}
-                    rx="4"
-                  />
-                  <text
-                    x="0"
-                    y="-20"
-                    text-anchor="middle"
-                    fill="black"
-                    font-size="12px"
-                  >{station.name}</text>
-                  <text
-                    x="0"
-                    y="-5"
-                    text-anchor="middle"
-                    fill="black"
-                    font-size="12px"
-                  >Local Time: {getStationLocalTime(station.lon)}</text>
-                </g>
+          {/if}
+        {/each}
+      
+        <!-- Ground Stations -->
+        {#each xBandStations as station}
+          {#if projection && isPointVisible(station.lon, station.lat)}
+            <g 
+              role="button"
+              tabindex="0"
+              on:mouseenter={() => hoveredStation = station.name}
+              on:mouseleave={() => hoveredStation = null}
+            >
+              <circle
+                cx={projection([station.lon, station.lat])?.[0]}
+                cy={projection([station.lon, station.lat])?.[1]}
+                r="4"
+                fill={station.color}
+                class:highlighted={hoveredStation === station.name}
+              />
+              {#if hoveredStation === station.name}
+                {#if projection}
+                  {@const coords = projection([station.lon, station.lat]) || [0, 0]}
+                  <g transform="translate({coords[0]}, {coords[1] - 10})">
+                    <rect
+                      x="-100"
+                      y="-40"
+                      width="200"
+                      height="35"
+                      fill="white"
+                      stroke={station.color}
+                      rx="4"
+                    />
+                    <text
+                      x="0"
+                      y="-20"
+                      text-anchor="middle"
+                      fill="black"
+                      font-size="12px"
+                    >{station.name}</text>
+                    <text
+                      x="0"
+                      y="-5"
+                      text-anchor="middle"
+                      fill="black"
+                      font-size="12px"
+                    >Local Time: {getStationLocalTime(station.lon)}</text>
+                  </g>
+                {/if}
               {/if}
-            {/if}
-          </g>
-        {/if}
-      {/each}
-    
-      <!-- Satellites -->
-      {#each satelliteData as sat}
-        <circle
-          cx={width/2 + (sat.gseY / 6371) * 250}
-          cy={height/2 - (sat.gseZ / 6371) * 250}
-          r="5"
-          fill={sat.name === 'DSCOVR' ? '#00FF00' : '#0000FF'}
-        />
-      {/each}
-    </svg>
+            </g>
+          {/if}
+        {/each}
+      
+        <!-- Satellites -->
+        {#each satelliteData as sat}
+          <circle
+            cx={width/2 + (sat.gseY / 6371) * 250}
+            cy={height/2 - (sat.gseZ / 6371) * 250}
+            r="5"
+            fill={sat.name === 'DSCOVR' ? '#00FF00' : '#0000FF'}
+          />
+        {/each}
+      </svg>
+      
+      <!-- Repositioned EPIC timestamp -->
+      {#if earthImage}
+        <div class="epic-timestamp">
+          Image taken: {satelliteData[0]?.time || 'Loading...'} UTC
+        </div>
+      {/if}
+    </div>
   </div>
   
   <div class="info-section">
@@ -301,13 +293,22 @@
     </div>
   </div>
 
-  <!-- <div class="info-section">
+  <!-- Add API URLs section -->
+  <div class="info-section">
     <h2>API URLs</h2>
-    <div class="api-url">
-      <strong>EPIC Image:</strong>
-      <code>https://epic.gsfc.nasa.gov/api/natural/date/{imageDate.split('T')[0]}</code>
+    <div class="api-urls">
+      <div class="api-url">
+        <strong>EPIC Data:</strong>
+        <code>https://api.nasa.gov/EPIC/api/natural?api_key=${NASA_API_KEY}</code>
+      </div>
+      {#if satelliteData[0]}
+        <div class="api-url">
+          <strong>Satellite Data:</strong>
+          <code>{satelliteData[0].satelliteURL}</code>
+        </div>
+      {/if}
     </div>
-  </div> -->
+  </div>
 
   <div class="antenna-image">
     <img src="/SWFO-Antenna-Locations.png" alt="SWFO Antenna Locations" />
@@ -319,6 +320,11 @@
       justify-content: center;
       width: 100%;
       margin: 0 auto;
+    }
+
+    .visualization-wrapper {
+      position: relative;
+      width: fit-content;
     }
 
     .visualization {
@@ -384,5 +390,40 @@
 
     g text {
       user-select: none;
+    }
+
+    .epic-timestamp {
+      position: absolute;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(0, 0, 0, 0.6);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      text-align: center;
+    }
+
+    .api-urls {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .api-url {
+      background: #fff;
+      padding: 0.5rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+
+    .api-url code {
+      display: block;
+      margin-top: 0.25rem;
+      padding: 0.5rem;
+      background: #f0f0f0;
+      border-radius: 4px;
+      overflow-x: auto;
     }
   </style>
