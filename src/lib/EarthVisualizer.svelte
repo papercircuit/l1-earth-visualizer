@@ -33,6 +33,12 @@
     .clipAngle(90);
   let pathGenerator: GeoPath = d3.geoPath().projection(projection);
 
+  // Add graticule generator
+  let graticule = d3.geoGraticule()();
+
+  // Add a flag to track if we're rotating (vs resizing)
+  let isRotating = false;
+
   // Update projection when size changes
   $: if (width && height && width > 0 && height > 0) {
     const size = Math.min(width, height);
@@ -41,6 +47,7 @@
       .translate([width / 2, height / 2])
       .clipAngle(90);
     pathGenerator = d3.geoPath().projection(projection);
+    // Don't regenerate graticule, just let it transition with the projection
     // Recalculate earth orientation with new projection
     if (selectedDate) {
       calculateEarthOrientation(selectedDate);
@@ -62,8 +69,18 @@
           .replace(/\.\d+/, ''); // Remove milliseconds
       };
 
+  // Add debounce helper
+  const debounce = (fn: Function, ms: number) => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    return function (...args: any[]) {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => fn.apply(null, args), ms);
+    };
+  };
+
   // Modify calculateEarthOrientation to always update station visibility
   const calculateEarthOrientation = (date: Date | string, animate = false) => {
+    isRotating = animate;
     // Ensure we're working with a Date object
     const dateObj = date instanceof Date ? date : new Date(date);
     const JD = (dateObj.getTime() / 86400000) + 2440587.5;
@@ -299,27 +316,105 @@
     }
   };
 
+  // Add new date/time control variables
+  const ONE_YEAR_AGO = new Date();
+  ONE_YEAR_AGO.setFullYear(ONE_YEAR_AGO.getFullYear() - 1);
+  
+  // Format date for display
+  const formatDateDisplay = (date: Date) => {
+    return date.toLocaleDateString(undefined, { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
+
+  // Format time for display
+  const formatTimeDisplay = (date: Date) => {
+    return date.toLocaleTimeString(undefined, { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: false 
+    });
+  };
+
+  // Modify the handlers to use a temporary rotation state while sliding
+  const handleDateChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    const newDate = new Date(parseInt(target.value));
+    
+    // Update date without animation while sliding
+    selectedDate.setFullYear(newDate.getFullYear());
+    selectedDate.setMonth(newDate.getMonth());
+    selectedDate.setDate(newDate.getDate());
+    selectedDate = new Date(selectedDate);
+    
+    // Update immediately without animation
+    calculateEarthOrientation(selectedDate, false);
+  };
+
+  // Add debounced version for smooth final animation
+  const debouncedDateAnimation = debounce((date: Date) => {
+    calculateEarthOrientation(date, true);
+  }, 150);
+
+  // Modify time handler similarly
+  const handleTimeChange = (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    const hours = parseInt(target.value);
+    
+    // Update time without animation while sliding
+    selectedDate.setHours(hours);
+    selectedDate.setMinutes(0);
+    selectedDate.setSeconds(0);
+    selectedDate = new Date(selectedDate);
+    
+    // Update immediately without animation
+    calculateEarthOrientation(selectedDate, false);
+  };
+
+  // Add debounced version for smooth final animation
+  const debouncedTimeAnimation = debounce((date: Date) => {
+    calculateEarthOrientation(date, true);
+  }, 150);
+
   onMount(() => {
     document.documentElement.style.setProperty('--transition-duration', `${TRANSITION_DURATION}ms`);
+    graticule = d3.geoGraticule()();
     updateVisualization(true);
   });
 </script>
 
 <style>
+  :global(body) {
+    background: black;
+    margin: 0;
+    padding: 0;
+  }
+
+  :global(h1) {
+    margin: 0;
+    padding: 0;
+    line-height: .1;
+  }
+
   .visualization-container {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.5rem;
     width: 100%;
-    max-width: min(100vw, 100vh);
-    margin: 0 auto;
+    max-width: 100vw;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
   }
 
   .visualization-wrapper {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     aspect-ratio: 1;
     background: #000;
-    border-radius: 8px;
+    border-radius: 0;
     overflow: hidden;
     position: relative;
   }
@@ -336,114 +431,82 @@
   }
 
   .controls {
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 0.75rem;
-    width: 100%;
     background: #2a2a2a;
-    padding: 1rem;
-    border-radius: 8px;
+    padding: 0.5rem;
+    border-radius: 0;
     color: white;
     box-sizing: border-box;
+    max-height: 60vh;
+    overflow-y: auto;
   }
 
-  .datetime-input {
-    font-size: 1.1rem;
+  .station-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    background: #454343;
     padding: 0.5rem;
     border-radius: 4px;
-    border: 1px solid #444;
-    background: #333;
-    color: white;
-    width: 40%;
+  }
+
+  .station-grid-title {
+    font-size: 1.2rem;
+    margin: 0.3rem;
+    text-align: center;
+  }
+
+  .station-item {
+    font-size: 1rem;
+    padding: 1cqw;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid transparent;
+    transition: background-color 0.2s, border-color 0.2s;
+    opacity: 0.5;
+  }
+
+  .station-item[data-visible="true"] {
+    opacity: 1;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .station-item[data-visible="true"][data-hovered="true"] {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .station-color {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .station-info {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .satellite-status {
+    display: flex;
+    gap: 0.3rem;
+    margin-left: auto;
+    font-size: 0.9rem;
   }
 
   .epic-info {
     font-size: 0.9rem;
     color: #ccc;
     line-height: 1.4;
-  }
-
-  /* Replace the global SVG transition with specific transitions */
-  :global(svg path:not(.station-marker)) {
-    transition: all var(--transition-duration) ease-out;
-  }
-
-  /* Faster transition for station markers */
-  :global(.station-marker) {
-    transition: transform 200ms ease-out;
-  }
-
-  /* Remove transition duration from station position */
-  :global(svg g[role="button"]) {
-    transition: none;
-  }
-
-  .datetime-controls {
-    display: flex;
-    gap: 1rem;
-    align-items: center;
-  }
-
-  .reset-button {
-    padding: 0.5rem 1rem;
-    border-radius: 4px;
-    border: 1px solid #444;
-    background: #333;
-    color: white;
-    cursor: pointer;
-    transition: background 0.2s;
-  }
-
-  .reset-button:hover {
-    background: #444;
-  }
-
-  .station-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-  }
-
-  .station-item {
-    background: #333;
-    padding: 0.5rem;
-    border-radius: 4px;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    cursor: pointer;
-    transition: background-color 0.2s;
-  }
-
-  .station-item:hover,
-  .station-item.hovered {
-    background: #444;
-  }
-
-  .station-color {
-    width: 14px;
-    height: 13px;
-    border-radius: 50%;
-    border: 1px solid white;
-  }
-
-  .satellite-status {
-    display: flex;
-    gap: 1rem;
-    margin-left: auto;
-  }
-
-  .status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-  }
-
-  /* Make hovered stations more prominent */
-  :global(path.station-marker[data-hovered="true"]) {
-    stroke-width: 2;
-    filter: drop-shadow(0 0 2px white);
   }
 
   .api-urls {
@@ -463,6 +526,193 @@
   .api-urls a:hover {
     text-decoration: underline;
   }
+
+  @media (max-width: 900px) {
+    .visualization-container {
+      flex-direction: row;
+    }
+
+    .controls {
+      width: 300px;
+      max-height: 100vh;
+    }
+
+    .station-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .station-grid-title {
+      font-size: 1.2rem;
+      margin-bottom: 0.5rem;
+      text-align: center;
+    } 
+
+    .controls {
+      font-size: 0.9rem;
+    }
+
+    .epic-info {
+      font-size: 0.8rem;
+    }
+
+    .api-urls {
+      font-size: 0.7rem;
+    }
+
+    .station-item {
+      padding: 0.3rem;
+      font-size: 0.8rem;
+    }
+
+    .satellite-status {
+      font-size: 0.8rem;
+    }
+  }
+
+  /* Replace the global SVG transition with conditional transitions */
+  :global(svg path:not(.station-marker)[data-rotating="true"]) {
+    transition: d var(--transition-duration) ease-out;
+  }
+
+  :global(svg path:not(.station-marker)[data-rotating="false"]) {
+    transition: none;
+  }
+
+  /* Faster transition for station markers */
+  :global(.station-marker) {
+    transition: transform 200ms ease-out;
+  }
+
+  /* Remove transition duration from station position */
+  :global(svg g[role="button"]) {
+    transition: none;
+  }
+
+  .datetime-controls {
+    display: flex;
+    flex-direction: row;
+    gap: 1rem;
+    justify-content: center;
+  }
+
+  .slider-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: center;
+    text-align: center;
+    width: 45%;
+  }
+
+  .slider-group label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: center;
+    width: 100%;
+  }
+
+  input[type="range"] {
+    width: 90%;
+    background: linear-gradient(to right, #666, #333);
+    height: 4px;
+    border-radius: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.4);
+    margin: 10px 0;
+    position: relative;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    border: 2px solid #fff;
+    transition: all 0.2s ease;
+    position: relative;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #fff;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    border: 2px solid #fff;
+    transition: all 0.2s ease;
+  }
+
+  /* Hover effects */
+  input[type="range"]::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 10px rgba(255,255,255,0.5);
+  }
+
+  input[type="range"]::-moz-range-thumb:hover {
+    transform: scale(1.2);
+    box-shadow: 0 0 10px rgba(255,255,255,0.5);
+  }
+
+  /* Active state */
+  input[type="range"]:active::-webkit-slider-thumb {
+    transform: translateY(-8px) scale(1.1);
+  }
+
+  input[type="range"]:active::-moz-range-thumb {
+    transform: scale(1.1);
+  }
+
+  /* Track focus state */
+  input[type="range"]:focus {
+    outline: none;
+  }
+
+  input[type="range"]:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.3);
+  }
+
+  input[type="range"]:focus::-moz-range-thumb {
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.3);
+  }
+
+  .reset-button {
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    border: 1px solid #444;
+    background: #333;
+    color: white;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+
+  .reset-button:hover {
+    background: #444;
+  }
+  /* Make hovered stations more prominent */
+  :global(path.station-marker[data-hovered="true"]) {
+    stroke-width: 2;
+    filter: drop-shadow(0 0 2px white);
+  }
+
+  .status-indicator {
+    display: flex;
+    gap: 0.3rem;
+  }
+
+  :global(.check) {
+    color: #4CAF50;  /* Green */
+  }
+
+  :global(.x) {
+    color: #F44336;  /* Red */
+  }
 </style>
 
 <div class="visualization-container">
@@ -480,15 +730,18 @@
         <circle cx={width/2} cy={height/2} r={width/2.5} fill="#1a3650" />
 
         <!-- Graticule -->
-        <path d={pathGenerator(d3.geoGraticule()())} 
-              stroke="rgba(255,255,255,0.3)" fill="none" />
+        <path d={pathGenerator(graticule)} 
+              stroke="rgba(255,255,255,0.3)" 
+              fill="none"
+              data-rotating={isRotating} />
 
         <!-- Land masses -->
         {#if worldData}
           <path d={pathGenerator(worldData)} 
                 fill="#3a5f5e" 
                 stroke="#4a7a79" 
-                stroke-width="0.4" />
+                stroke-width="0.4"
+                data-rotating={isRotating} />
         {/if}
 
         <!-- EPIC centroid projection -->
@@ -540,6 +793,15 @@
                transform={`translate(${coords})`}
                on:mouseenter={() => hoveredStation = station.name}
                on:mouseleave={() => hoveredStation = null}>
+              <!-- Cylinder extending outward -->
+              <path 
+                class="station-cylinder"
+                d={`M 0 -30 L 10 0 L -10 0 Z`}
+                transform={`rotate(${rotationAngle})`}
+                fill={station.color}
+                opacity="0.4"
+              />
+              <!-- Station marker circle -->
               <path 
                 class="station-marker"
                 data-hovered={hoveredStation === station.name}
@@ -564,8 +826,8 @@
                     Local: {getLocalTime(station.lon)}
                   </text>
                   <text x="5" y="-5" fill="white" font-size="12">
-                    DSCOVR: {station.canSeeDscovr ? '✓' : '✗'}
-                    ACE: {station.canSeeAce ? '✓' : '✗'}
+                    DSCOVR: <tspan class={station.canSeeDscovr ? 'check' : 'x'}>{station.canSeeDscovr ? '✓' : '✗'}</tspan>
+                    ACE: <tspan class={station.canSeeAce ? 'check' : 'x'}>{station.canSeeAce ? '✓' : '✗'}</tspan>
                   </text>
                 </g>
               {/if}
@@ -578,39 +840,76 @@
 
   <div class="controls">
     <div class="datetime-controls">
-      <input class="datetime-input"
-             type="datetime-local" 
-             value={formatDateForInput(selectedDate)}
-             max={formatDateForInput(new Date())}
-             on:input={(e: Event) => {
-               const target = e.target as HTMLInputElement;
-               selectedDate = new Date(target.value);
-               calculateEarthOrientation(selectedDate, true);
-             }}>
+      <div class="slider-group">
+        <label>
+          Date: {formatDateDisplay(selectedDate)}
+          <input 
+            type="range" 
+            min={ONE_YEAR_AGO.getTime()} 
+            max={Date.now()} 
+            value={selectedDate.getTime()} 
+            step={24 * 60 * 60 * 1000}
+            on:input={handleDateChange}
+          />
+        </label>
+      </div>
+      <div class="slider-group">
+        <label>
+          Time: {formatTimeDisplay(selectedDate)}
+          <input 
+            type="range" 
+            min="0" 
+            max="23" 
+            value={selectedDate.getHours()} 
+            step="1"
+            on:input={handleTimeChange}
+          />
+        </label>
+      </div>
       <button class="reset-button" on:click={resetToCurrentTime}>
         Reset to Now
       </button>
     </div>
-    
+    <h2 class="station-grid-title">Currently Visible Stations</h2>
     <div class="station-grid">
+      
       {#each xBandStations as station}
-        <div class="station-item"
-             role="button"
-             tabindex="0"
-             class:hovered={hoveredStation === station.name}
-             on:mouseenter={() => hoveredStation = station.name}
-             on:mouseleave={() => hoveredStation = null}>
-          <div class="station-color" style="background-color: {station.color}"></div>
-          <span>{station.name}</span>
-          <div class="satellite-status">
-            <span class="status-indicator">
-              DSCOVR: {station.canSeeDscovr ? '✓' : '✗'}
-            </span>
-            <span class="status-indicator">
-              ACE: {station.canSeeAce ? '✓' : '✗'}
-            </span>
+        {@const coords = projection([station.lon, station.lat])}
+        {@const [lambda, phi] = projection.rotate()}
+        {@const angle = Math.acos(
+          Math.sin(station.lat * Math.PI/180) * Math.sin(-phi * Math.PI/180) +
+          Math.cos(station.lat * Math.PI/180) * Math.cos(-phi * Math.PI/180) * 
+          Math.cos((station.lon + lambda) * Math.PI/180)
+        )}
+        {@const scale = Math.max(0.3, Math.cos(angle))}
+        {@const rotationAngle = Math.atan2(
+          Math.cos(station.lat * Math.PI/180) * Math.sin((station.lon + lambda) * Math.PI/180),
+          Math.cos(-phi * Math.PI/180) * Math.sin(station.lat * Math.PI/180) -
+          Math.sin(-phi * Math.PI/180) * Math.cos(station.lat * Math.PI/180) * 
+          Math.cos((station.lon + lambda) * Math.PI/180)
+        ) * 180/Math.PI}
+        {#if coords && isPointVisible(coords, station.lon, station.lat)}
+          <div class="station-item"
+               role="button"
+               tabindex="0"
+               data-visible={coords && isPointVisible(coords, station.lon, station.lat)}
+               data-hovered={hoveredStation === station.name}
+               on:mouseenter={() => hoveredStation = station.name}
+               on:mouseleave={() => hoveredStation = null}>
+            <div class="station-color" style="background-color: {station.color}"></div>
+            <div class="station-info">
+              <span>{station.name}</span>
+              <div class="satellite-status">
+                <span class="status-indicator">
+                  DSCOVR: <span class={station.canSeeDscovr ? 'check' : 'x'}>{station.canSeeDscovr ? '✓' : '✗'}</span>
+                </span>
+                <span class="status-indicator">
+                  ACE: <span class={station.canSeeAce ? 'check' : 'x'}>{station.canSeeAce ? '✓' : '✗'}</span>
+                </span>
+              </div>
+            </div>
           </div>
-        </div>
+        {/if}
       {/each}
     </div>
 
